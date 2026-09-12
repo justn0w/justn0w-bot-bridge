@@ -1,0 +1,13 @@
+# 编译产物
+/server
+/bin/
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+
+# 日志
+*.log

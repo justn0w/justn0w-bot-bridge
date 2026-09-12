@@ -1,0 +1,9 @@
+server:
+  port: 8080
+
+database:
+  user: root
+  password: ""
+  host: 127.0.0.1
+  port: 3306
+  name: justn0w_bot_bridge
