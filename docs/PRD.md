@@ -147,10 +147,10 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     subgraph Feishu[飞书侧]
-        U[提问用户] -->|@机器人 提问| FS[飞书服务器]
+        U[提问用户] -->|"@机器人 提问"| FS[飞书服务器]
     end
 
-    FS -->|事件回调 im.message.receive_v1| BB[bot-bridge Go 服务]
+    FS -->|"事件回调 im.message.receive_v1"| BB[bot-bridge Go 服务]
 
     subgraph BB[bot-bridge]
         F[feishu 模块<br/>验签 / 收发消息]
