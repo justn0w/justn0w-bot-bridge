@@ -301,3 +301,11 @@ oncall:
   max_followups: 3
   ai_timeout_sec: 90
 ```
+
+参考：
+https://github.com/chenhg5/cc-connect/blob/main/README.zh-CN.md
+https://www.doubao.com/thread/xDjs343GvVpcmc2dT
+
+飞书开发参考：
+* 机器人开发文档：https://open.feishu.cn/document/client-docs/bot-v3/bot-overview
+* 接收消息：https://open.feishu.cn/document/server-docs/im-v1/message/events/receive
