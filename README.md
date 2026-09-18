@@ -4,7 +4,7 @@
 
 #### 二、快速开始
 
-1. 配置飞书应用凭证
+1. 配置凭证
 
    凭证不入代码库，通过 `.env` 注入。从模板复制后填入真实值：
 
@@ -16,8 +16,16 @@
    | --- | --- |
    | `FEISHU_APP_ID` | 飞书应用 App ID |
    | `FEISHU_APP_SECRET` | 飞书应用 App Secret |
+   | `DEEPSEEK_API_KEY` | DeepSeek API Key（答疑模型） |
 
-   凭证获取：飞书开放平台 → 开发者后台 → 凭证与基础信息。
+   凭证获取：飞书开放平台 → 开发者后台 → 凭证与基础信息；DeepSeek API Key 见
+   <https://platform.deepseek.com/api_keys>。
+
+   > 答疑模型默认走 DeepSeek 的 Anthropic 兼容接口。若要换成其他兼容
+   > Anthropic Messages 协议的服务，改 `configs/config.yaml` 的
+   > `llm.base_url` 与 `llm.model` 即可，代码无需改动。
+   > 此前按 Anthropic 配置的部署也可继续用 `ANTHROPIC_API_KEY`，
+   > 两者同时存在时以 `DEEPSEEK_API_KEY` 为准。
 
    > `.env` 已被 `.gitignore` 忽略。生产环境可直接注入同名环境变量，
    > 已有环境变量优先级高于 `.env`，无需该文件。
