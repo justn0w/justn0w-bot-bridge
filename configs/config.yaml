@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+database:
+  user: root
+  password: ""
+  host: 127.0.0.1
+  port: 3306
+  name: justn0w_bot_bridge
+
+# 答疑模型。api_key 属敏感信息，由环境变量 DEEPSEEK_API_KEY 注入，不要写在这里。
+llm:
+  # DeepSeek 的 Anthropic 兼容入口；只需填到域名层级，SDK 会自动补 /v1/messages。
+  # 换其他兼容 Anthropic Messages 协议的网关时改这里即可，代码无需改动。
+  base_url: https://api.deepseek.com/anthropic
+  # 需要更强推理能力时改成 deepseek-v4-pro
+  model: deepseek-v4-flash
+  max_tokens: 2000
+  timeout_sec: 90

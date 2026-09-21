@@ -1,0 +1,10 @@
+# Docker 部署专用配置：数据库地址指向 compose 中的 mysql 服务
+server:
+  port: 8080
+
+database:
+  user: root
+  password: ""
+  host: mysql
+  port: 3306
+  name: justn0w_bot_bridge

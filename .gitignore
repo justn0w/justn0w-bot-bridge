@@ -1,0 +1,21 @@
+# 编译产物
+/server
+/bin/
+*.exe
+*.test
+*.out
+
+# 环境变量（含密钥，禁止提交）
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code 本地配置与工作树（settings.local.json 含个人权限，不入库）
+.claude/
+
+# 日志
+*.log

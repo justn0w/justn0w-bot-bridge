@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: justn0w-bot-bridge 订单服务 API
+  description: 一个基于 Gin + GORM + MySQL 的简单订单服务接口文档
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发环境
+
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      operationId: health
+      responses:
+        "200":
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/orders:
+    post:
+      summary: 创建订单
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "200":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "400":
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      summary: 分页查询订单列表
+      operationId: listOrders
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: 页码
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: 每页数量（最大 100）
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  msg:
+                    type: string
+                    example: success
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Order"
+                      total:
+                        type: integer
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+
+  /api/v1/orders/{id}:
+    get:
+      summary: 按 ID 查询订单
+      operationId: getOrderById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: 订单 ID
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "404":
+          description: 订单不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    CreateOrderRequest:
+      type: object
+      required:
+        - user_id
+        - product_name
+        - amount
+      properties:
+        user_id:
+          type: integer
+          description: 用户 ID
+        product_name:
+          type: string
+          description: 商品名称
+        amount:
+          type: number
+          description: 订单金额
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        order_no:
+          type: string
+          description: 订单号
+        user_id:
+          type: integer
+        product_name:
+          type: string
+        amount:
+          type: number
+        status:
+          type: integer
+          description: 0-待支付 1-已支付 2-已取消
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OrderResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        msg:
+          type: string
+          example: success
+        data:
+          $ref: "#/components/schemas/Order"
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+        msg:
+          type: string
+        data:
+          nullable: true
