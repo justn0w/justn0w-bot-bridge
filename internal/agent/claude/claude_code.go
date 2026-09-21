@@ -8,7 +8,7 @@ import (
 )
 
 // prompt 是当前写死的提问，后续由调用方传入
-const prompt = "帮我写一个go语言的hello world程序"
+const prompt = "who you are ?"
 
 // startProcess 拉起 cliPath 指定的进程，把它的 stdout 逐行写入 out。
 //
@@ -16,7 +16,9 @@ const prompt = "帮我写一个go语言的hello world程序"
 // 安装并登录真实 claude；后者让断言落在调用方传入的 buffer 上，不必替换
 // 全局的 os.Stdout。
 func startProcess(cliPath string, out io.Writer) error {
-	cmd := exec.Command(cliPath, prompt)
+	// -p/--print 是必须的：不带它 claude 会进交互式 TUI 并等待终端输入，
+	// 而这里的 stdin 是 /dev/null、stdout 是管道，结果只会是立即 EOF 或卡死。
+	cmd := exec.Command(cliPath, "-p", prompt)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("获取 stdout 管道失败: %w", err)
