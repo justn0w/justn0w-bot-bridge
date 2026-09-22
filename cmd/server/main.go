@@ -9,27 +9,31 @@ import (
 
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
+	"justn0w-bot-bridge/internal/agent/claude"
 	"justn0w-bot-bridge/internal/bridge"
 	"justn0w-bot-bridge/internal/config"
 	"justn0w-bot-bridge/internal/feishu"
-	"justn0w-bot-bridge/internal/llm"
 )
 
 func main() {
 	// 1. 加载配置（.env + configs/config.yaml）
+	// 必填项只有飞书凭证：答疑走本机 CLI，不需要模型密钥。
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
-	// 2. 组装答疑依赖：模型生成答案，飞书回发消息
+	// 2. 组装答疑依赖：CLI 生成答案，飞书回发消息
+	//
+	// 走本机 Claude Code CLI：直接复用 CLI 的登录态、工具链与代码库上下文，
+	// 代价是每次提问起一个子进程；运行机器需已登录 Claude Code。
+	//
+	// WorkDir 刻意留空，即继承启动目录——CLI 按 cwd 存放并查找会话记录，
+	// 启动目录一变，已存的 session 就续不上（详见 claude.Options.WorkDir 注释）。
 	bot := bridge.New(
-		llm.NewClient(llm.Options{
-			APIKey:    cfg.LLM.APIKey,
-			BaseURL:   cfg.LLM.BaseURL,
-			Model:     cfg.LLM.Model,
-			MaxTokens: cfg.LLM.MaxTokens,
-			Timeout:   cfg.LLM.Timeout(),
+		claude.NewClient(claude.Options{
+			CLIPath: cfg.Claude.CLIPath,
+			Timeout: cfg.Claude.Timeout(),
 		}),
 		feishu.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret),
 	)

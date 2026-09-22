@@ -16,24 +16,15 @@ const (
 
 	envFeishuAppID     = "FEISHU_APP_ID"
 	envFeishuAppSecret = "FEISHU_APP_SECRET"
-
-	// envLLMAPIKey 是答疑模型的主用密钥环境变量
-	envLLMAPIKey = "DEEPSEEK_API_KEY"
-	// envLLMAPIKeyFallback 兼容此前按 Anthropic 配置的部署，
-	// 两个变量都未设置时才算缺失
-	envLLMAPIKeyFallback = "ANTHROPIC_API_KEY"
 )
 
-// 答疑模型的默认值，可在 config.yaml 的 llm 段覆盖
+// 答疑 agent 的默认值，可在 config.yaml 的 claude 段覆盖
 const (
-	// defaultLLMBaseURL 指向 DeepSeek 的 Anthropic 兼容入口。
-	// 只需填到域名层级，SDK 会自行拼接 /v1/messages。
-	defaultLLMBaseURL = "https://api.deepseek.com/anthropic"
-	// defaultLLMModel 取 v4 的 flash 档：答疑场景对延迟与成本敏感，
-	// 需要更强推理时改成 deepseek-v4-pro 即可。
-	defaultLLMModel      = "deepseek-v4-flash"
-	defaultLLMMaxTokens  = int64(2000)
-	defaultLLMTimeoutSec = 90
+	// defaultClaudeCLIPath 按名称交给 PATH 查找；部署路径不同时再改配置
+	defaultClaudeCLIPath = "claude"
+	// defaultClaudeTimeoutSec 给得宽松：每次提问都要冷启动一个
+	// Node 子进程并加载代码库上下文，慢是常态
+	defaultClaudeTimeoutSec = 120
 )
 
 // envBindings 声明「配置键 <- 环境变量」的绑定关系。
@@ -49,7 +40,6 @@ var envBindings = []struct {
 }{
 	{"feishu.app_id", []string{envFeishuAppID}},
 	{"feishu.app_secret", []string{envFeishuAppSecret}},
-	{"llm.api_key", []string{envLLMAPIKey, envLLMAPIKeyFallback}},
 }
 
 // Config 全局配置
@@ -57,7 +47,7 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
 	Feishu   FeishuConfig   `mapstructure:"feishu"`
-	LLM      LLMConfig      `mapstructure:"llm"`
+	Claude   ClaudeConfig   `mapstructure:"claude"`
 }
 
 // ServerConfig 服务配置
@@ -80,25 +70,43 @@ type FeishuConfig struct {
 	AppSecret string `mapstructure:"app_secret"`
 }
 
-// LLMConfig 答疑模型配置。
-// APIKey 属敏感信息，通过 .env / 环境变量注入，不写入 YAML。
-type LLMConfig struct {
-	APIKey string `mapstructure:"api_key"`
-	// BaseURL 指向兼容 Anthropic Messages 协议的服务入口，
-	// 默认 DeepSeek；指向别家网关时改这里即可，代码无需改动。
-	BaseURL    string `mapstructure:"base_url"`
-	Model      string `mapstructure:"model"`
-	MaxTokens  int64  `mapstructure:"max_tokens"`
-	TimeoutSec int    `mapstructure:"timeout_sec"`
+// ClaudeConfig 是 Claude Code CLI 答疑 agent 的配置。
+// 不需要密钥：CLI 复用本机的 Claude Code 登录态。
+type ClaudeConfig struct {
+	// CLIPath 是 claude 可执行文件路径，留空按 "claude" 走 PATH 查找
+	CLIPath string `mapstructure:"cli_path"`
+	// TimeoutSec 是单次调用的超时秒数
+	TimeoutSec int `mapstructure:"timeout_sec"`
 }
 
-// Timeout 返回单次模型调用的超时时间
-func (c LLMConfig) Timeout() time.Duration {
+// Timeout 返回单次 CLI 调用的超时时间
+func (c ClaudeConfig) Timeout() time.Duration {
 	return time.Duration(c.TimeoutSec) * time.Second
 }
 
+// LoadOption 调整 Load 的行为
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	// skipCredentials 跳过飞书凭证校验
+	skipCredentials bool
+}
+
+// WithoutCredentialCheck 跳过飞书凭证校验。
+//
+// 供不依赖答疑链路的入口使用（如订单 MCP 服务）：它只需要数据库配置，
+// 强制要求飞书凭证会让它在没配这些凭证的机器上直接起不来。
+func WithoutCredentialCheck() LoadOption {
+	return func(o *loadOptions) { o.skipCredentials = true }
+}
+
 // Load 加载配置：先注入 .env，再读取 YAML，最后校验必填项
-func Load() (*Config, error) {
+func Load(opts ...LoadOption) (*Config, error) {
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	if err := loadDotEnv(); err != nil {
 		return nil, err
 	}
@@ -106,6 +114,10 @@ func Load() (*Config, error) {
 	cfg, err := load("config", []string{"./configs", "."})
 	if err != nil {
 		return nil, err
+	}
+
+	if o.skipCredentials {
+		return cfg, nil
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -149,17 +161,11 @@ func load(name string, paths []string) (*Config, error) {
 
 // applyDefaults 为未显式配置的可选字段填充默认值
 func (c *Config) applyDefaults() {
-	if c.LLM.BaseURL == "" {
-		c.LLM.BaseURL = defaultLLMBaseURL
+	if c.Claude.CLIPath == "" {
+		c.Claude.CLIPath = defaultClaudeCLIPath
 	}
-	if c.LLM.Model == "" {
-		c.LLM.Model = defaultLLMModel
-	}
-	if c.LLM.MaxTokens <= 0 {
-		c.LLM.MaxTokens = defaultLLMMaxTokens
-	}
-	if c.LLM.TimeoutSec <= 0 {
-		c.LLM.TimeoutSec = defaultLLMTimeoutSec
+	if c.Claude.TimeoutSec <= 0 {
+		c.Claude.TimeoutSec = defaultClaudeTimeoutSec
 	}
 }
 
@@ -189,9 +195,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Feishu.AppSecret == "" {
 		return fmt.Errorf("飞书 AppSecret 未配置，请设置环境变量 %s（可参考 .env.example）", envFeishuAppSecret)
-	}
-	if c.LLM.APIKey == "" {
-		return fmt.Errorf("答疑模型 API Key 未配置，请设置环境变量 %s（可参考 .env.example）", envLLMAPIKey)
 	}
 	return nil
 }

@@ -16,19 +16,18 @@
    | --- | --- |
    | `FEISHU_APP_ID` | 飞书应用 App ID |
    | `FEISHU_APP_SECRET` | 飞书应用 App Secret |
-   | `DEEPSEEK_API_KEY` | DeepSeek API Key（答疑模型） |
 
-   凭证获取：飞书开放平台 → 开发者后台 → 凭证与基础信息；DeepSeek API Key 见
-   <https://platform.deepseek.com/api_keys>。
-
-   > 答疑模型默认走 DeepSeek 的 Anthropic 兼容接口。若要换成其他兼容
-   > Anthropic Messages 协议的服务，改 `configs/config.yaml` 的
-   > `llm.base_url` 与 `llm.model` 即可，代码无需改动。
-   > 此前按 Anthropic 配置的部署也可继续用 `ANTHROPIC_API_KEY`，
-   > 两者同时存在时以 `DEEPSEEK_API_KEY` 为准。
+   凭证获取：飞书开放平台 → 开发者后台 → 凭证与基础信息。
 
    > `.env` 已被 `.gitignore` 忽略。生产环境可直接注入同名环境变量，
    > 已有环境变量优先级高于 `.env`，无需该文件。
+
+   **另一项前置条件（无对应环境变量）：** 答疑由本机的 `claude` 命令完成，
+   因此运行服务的机器必须已登录 Claude Code（在本机执行一次 `claude` 走完登录流程，
+   登录态由 CLI 自己保存）。未登录时飞书侧连接正常，但每次提问都会返回兜底话术。
+
+   可执行文件不在 `PATH` 里时，改 `configs/config.yaml` 的 `claude.cli_path`
+   填绝对路径；单次调用超时同理，见该段的 `timeout_sec`。
 
 2. 启动服务
 

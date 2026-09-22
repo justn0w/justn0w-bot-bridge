@@ -37,14 +37,6 @@ func unsetenv(t *testing.T, key string) {
 	}
 }
 
-// clearLLMEnv 清空答疑模型的密钥变量。
-// 宿主机上可能真的配了这两个变量，不清空会让「缺失」类断言假失败。
-func clearLLMEnv(t *testing.T) {
-	t.Helper()
-	unsetenv(t, envLLMAPIKey)
-	unsetenv(t, envLLMAPIKeyFallback)
-}
-
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "config.yaml", baseYAML)
@@ -112,44 +104,33 @@ func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
 		feishu  FeishuConfig
-		llm     LLMConfig
 		wantErr bool
 	}{
 		{
 			name:    "凭证齐全时通过",
 			feishu:  FeishuConfig{AppID: "cli_x", AppSecret: "s3cret"},
-			llm:     LLMConfig{APIKey: "sk-test"},
 			wantErr: false,
 		},
 		{
 			name:    "缺少 AppID 时报错",
 			feishu:  FeishuConfig{AppSecret: "s3cret"},
-			llm:     LLMConfig{APIKey: "sk-test"},
 			wantErr: true,
 		},
 		{
 			name:    "缺少 AppSecret 时报错",
 			feishu:  FeishuConfig{AppID: "cli_x"},
-			llm:     LLMConfig{APIKey: "sk-test"},
 			wantErr: true,
 		},
 		{
 			name:    "两者都缺失时报错",
 			feishu:  FeishuConfig{},
-			llm:     LLMConfig{APIKey: "sk-test"},
-			wantErr: true,
-		},
-		{
-			name:    "缺少答疑模型 API Key 时报错",
-			feishu:  FeishuConfig{AppID: "cli_x", AppSecret: "s3cret"},
-			llm:     LLMConfig{},
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{Feishu: tt.feishu, LLM: tt.llm}
+			cfg := &Config{Feishu: tt.feishu}
 			if err := cfg.Validate(); (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -157,111 +138,50 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestLoadLLMDefaultsAndEnv(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "config.yaml", baseYAML)
-
-	clearLLMEnv(t)
-	t.Setenv(envLLMAPIKey, "sk-from-env")
-	unsetenv(t, envFeishuAppID)
-	unsetenv(t, envFeishuAppSecret)
-
-	cfg, err := load("config", []string{dir})
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
-	}
-
-	if cfg.LLM.APIKey != "sk-from-env" {
-		t.Errorf("LLM.APIKey = %q, want %q", cfg.LLM.APIKey, "sk-from-env")
-	}
-
-	// YAML 未配置 llm 段时，可选字段应回落到默认值
-	if cfg.LLM.BaseURL != defaultLLMBaseURL {
-		t.Errorf("LLM.BaseURL = %q, want %q", cfg.LLM.BaseURL, defaultLLMBaseURL)
-	}
-	if cfg.LLM.Model != defaultLLMModel {
-		t.Errorf("LLM.Model = %q, want %q", cfg.LLM.Model, defaultLLMModel)
-	}
-	if cfg.LLM.MaxTokens != defaultLLMMaxTokens {
-		t.Errorf("LLM.MaxTokens = %d, want %d", cfg.LLM.MaxTokens, defaultLLMMaxTokens)
-	}
-	if got, want := cfg.LLM.Timeout(), 90*time.Second; got != want {
-		t.Errorf("LLM.Timeout() = %v, want %v", got, want)
-	}
-}
-
-// TestLoadLLMAPIKeyFallsBackToLegacyEnv 确认未设置 DEEPSEEK_API_KEY 时，
-// 仍兼容此前配置的 ANTHROPIC_API_KEY，避免存量部署直接启动失败。
-func TestLoadLLMAPIKeyFallsBackToLegacyEnv(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "config.yaml", baseYAML)
-
-	clearLLMEnv(t)
-	t.Setenv(envLLMAPIKeyFallback, "sk-legacy")
-
-	cfg, err := load("config", []string{dir})
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
-	}
-
-	if cfg.LLM.APIKey != "sk-legacy" {
-		t.Errorf("LLM.APIKey = %q, want %q", cfg.LLM.APIKey, "sk-legacy")
-	}
-}
-
-func TestLoadLLMFromYAMLOverridesDefaults(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "config.yaml", baseYAML+`llm:
-  base_url: https://gateway.internal/anthropic
-  model: deepseek-v4-pro
-  max_tokens: 512
+// TestLoadClaudeDefaultsAndYAML 覆盖 Claude 段的兜底与覆盖两条路径。
+// 答疑链路改成驱动本机 CLI 后，这一段配的是可执行文件路径与超时，
+// 之前完全没有测试覆盖。
+func TestLoadClaudeDefaultsAndYAML(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		wantCLIPath string
+		wantTimeout time.Duration
+	}{
+		{
+			name:        "未配置 claude 段时回落到默认值",
+			yaml:        baseYAML,
+			wantCLIPath: defaultClaudeCLIPath,
+			wantTimeout: 120 * time.Second,
+		},
+		{
+			name: "YAML 显式配置时覆盖默认值",
+			yaml: baseYAML + `claude:
+  cli_path: /opt/bin/claude
   timeout_sec: 30
-`)
-
-	clearLLMEnv(t)
-	t.Setenv(envLLMAPIKey, "sk-from-env")
-
-	cfg, err := load("config", []string{dir})
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
+`,
+			wantCLIPath: "/opt/bin/claude",
+			wantTimeout: 30 * time.Second,
+		},
 	}
 
-	if cfg.LLM.BaseURL != "https://gateway.internal/anthropic" {
-		t.Errorf("LLM.BaseURL = %q, want 取自 YAML 的网关地址", cfg.LLM.BaseURL)
-	}
-	if cfg.LLM.Model != "deepseek-v4-pro" {
-		t.Errorf("LLM.Model = %q, want %q", cfg.LLM.Model, "deepseek-v4-pro")
-	}
-	if cfg.LLM.MaxTokens != 512 {
-		t.Errorf("LLM.MaxTokens = %d, want 512", cfg.LLM.MaxTokens)
-	}
-	if got, want := cfg.LLM.Timeout(), 30*time.Second; got != want {
-		t.Errorf("LLM.Timeout() = %v, want %v", got, want)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "config.yaml", tt.yaml)
 
-// TestLoadLLMAPIKeyEnvTakesPrecedence 确认环境变量优先于 YAML。
-//
-// 注意：这里只断言「优先」，不是「独占」——viper.BindEnv 允许环境变量缺失时
-// 回落到 YAML 中的取值。也就是说文件头注释所称的「敏感配置只从环境变量注入」
-// 目前并未被强制，飞书凭证同样存在这一情况。若要真正 env-only，需要在此显式忽略
-// YAML 中的 llm.api_key / feishu.app_id / feishu.app_secret。
-func TestLoadLLMAPIKeyEnvTakesPrecedence(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "config.yaml", baseYAML+`llm:
-  api_key: sk-from-yaml
-`)
+			cfg, err := load("config", []string{dir})
+			if err != nil {
+				t.Fatalf("加载配置失败: %v", err)
+			}
 
-	clearLLMEnv(t)
-	t.Setenv(envLLMAPIKey, "sk-from-env")
-
-	cfg, err := load("config", []string{dir})
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
-	}
-
-	if cfg.LLM.APIKey != "sk-from-env" {
-		t.Errorf("LLM.APIKey = %q, want %q（环境变量应优先于 YAML）", cfg.LLM.APIKey, "sk-from-env")
+			if cfg.Claude.CLIPath != tt.wantCLIPath {
+				t.Errorf("Claude.CLIPath = %q, want %q", cfg.Claude.CLIPath, tt.wantCLIPath)
+			}
+			if got := cfg.Claude.Timeout(); got != tt.wantTimeout {
+				t.Errorf("Claude.Timeout() = %v, want %v", got, tt.wantTimeout)
+			}
+		})
 	}
 }
 
@@ -328,11 +248,10 @@ func TestLoadEndToEnd(t *testing.T) {
 		t.Fatalf("创建 configs 目录失败: %v", err)
 	}
 	writeFile(t, filepath.Join(dir, "configs"), "config.yaml", baseYAML)
-	writeFile(t, dir, ".env", "FEISHU_APP_ID=cli_e2e\nFEISHU_APP_SECRET=secret_e2e\nDEEPSEEK_API_KEY=sk-e2e\n")
+	writeFile(t, dir, ".env", "FEISHU_APP_ID=cli_e2e\nFEISHU_APP_SECRET=secret_e2e\n")
 
 	unsetenv(t, envFeishuAppID)
 	unsetenv(t, envFeishuAppSecret)
-	clearLLMEnv(t)
 	t.Chdir(dir)
 
 	cfg, err := Load()
@@ -342,9 +261,6 @@ func TestLoadEndToEnd(t *testing.T) {
 
 	if cfg.Feishu.AppID != "cli_e2e" || cfg.Feishu.AppSecret != "secret_e2e" {
 		t.Errorf("Feishu = %+v, want 来自 .env 的凭证", cfg.Feishu)
-	}
-	if cfg.LLM.APIKey != "sk-e2e" {
-		t.Errorf("LLM.APIKey = %q, want 来自 .env 的 sk-e2e", cfg.LLM.APIKey)
 	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("Server.Port = %d, want 9090", cfg.Server.Port)

@@ -8,18 +8,21 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
-	"justn0w-bot-bridge/internal/llm"
+	"justn0w-bot-bridge/internal/agent"
 )
 
-// stubLLM 是 answerer 的测试替身
-type stubLLM struct {
-	answer  *llm.Answer
+// stubAnswerer 是 answerer 的测试替身
+type stubAnswerer struct {
+	answer  *agent.Answer
 	err     error
 	panicOn bool
 	gotQ    string
+	// gotChat 记录调用方传来的会话键，用于验证「每群一个会话」确实带上了群标识
+	gotChat string
 }
 
-func (s *stubLLM) Ask(_ context.Context, question string) (*llm.Answer, error) {
+func (s *stubAnswerer) Ask(_ context.Context, sessionKey, question string) (*agent.Answer, error) {
+	s.gotChat = sessionKey
 	s.gotQ = question
 	if s.panicOn {
 		panic("模型调用 panic")
@@ -72,17 +75,17 @@ func (s *stubFeishu) waitSent(t *testing.T) {
 	}
 }
 
-// blockingLLM 模拟慢模型，在 release 关闭前一直阻塞
-type blockingLLM struct {
+// blockingAnswerer 模拟慢模型，在 release 关闭前一直阻塞
+type blockingAnswerer struct {
 	entered chan struct{}
 	release chan struct{}
 }
 
-func (s *blockingLLM) Ask(ctx context.Context, _ string) (*llm.Answer, error) {
+func (s *blockingAnswerer) Ask(ctx context.Context, _, _ string) (*agent.Answer, error) {
 	close(s.entered)
 	select {
 	case <-s.release:
-		return &llm.Answer{Text: "迟到的答案"}, nil
+		return &agent.Answer{Text: "迟到的答案"}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -94,10 +97,10 @@ func validEvent() *larkim.P2MessageReceiveV1 {
 }
 
 func TestAnswerRepliesWithModelText(t *testing.T) {
-	model := &stubLLM{answer: &llm.Answer{Text: "先提交申请，再由主管审批。"}}
+	stub := &stubAnswerer{answer: &agent.Answer{Text: "先提交申请，再由主管审批。"}}
 	feishu := newStubFeishu()
 
-	New(model, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
+	New(stub, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
 
 	sent := feishu.sentMessages()
 	if len(sent) != 1 {
@@ -112,10 +115,10 @@ func TestAnswerRepliesWithModelText(t *testing.T) {
 }
 
 func TestAnswerRepliesFallbackOnModelError(t *testing.T) {
-	model := &stubLLM{err: context.DeadlineExceeded}
+	stub := &stubAnswerer{err: context.DeadlineExceeded}
 	feishu := newStubFeishu()
 
-	New(model, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
+	New(stub, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
 
 	sent := feishu.sentMessages()
 	if len(sent) != 1 {
@@ -129,10 +132,10 @@ func TestAnswerRepliesFallbackOnModelError(t *testing.T) {
 // TestAnswerRepliesFallbackOnEmptyText 空答案不能原样发出，
 // 否则用户只会看到一条空白气泡
 func TestAnswerRepliesFallbackOnEmptyText(t *testing.T) {
-	model := &stubLLM{answer: &llm.Answer{Text: ""}}
+	stub := &stubAnswerer{answer: &agent.Answer{Text: ""}}
 	feishu := newStubFeishu()
 
-	New(model, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
+	New(stub, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
 
 	sent := feishu.sentMessages()
 	if len(sent) != 1 {
@@ -146,11 +149,11 @@ func TestAnswerRepliesFallbackOnEmptyText(t *testing.T) {
 // TestAnswerRecoversFromPanic 验证 panic 不会终止进程。
 // 该 goroutine 不在飞书 SDK 的 recover 覆盖范围内。
 func TestAnswerRecoversFromPanic(t *testing.T) {
-	model := &stubLLM{panicOn: true}
+	stub := &stubAnswerer{panicOn: true}
 	feishu := newStubFeishu()
 
 	// panic 若逃逸，测试进程会直接崩溃，等于断言失败
-	New(model, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
+	New(stub, feishu).answer(context.Background(), "oc_chat", "怎么申请调休")
 
 	if got := len(feishu.sentMessages()); got != 0 {
 		t.Errorf("发出消息 %d 条, want 0 条（panic 后状态未知，不发消息）", got)
@@ -158,35 +161,40 @@ func TestAnswerRecoversFromPanic(t *testing.T) {
 }
 
 func TestHandlerFeishuMsgSkipsInvalidEvent(t *testing.T) {
-	model := &stubLLM{answer: &llm.Answer{Text: "不应被回复"}}
+	stub := &stubAnswerer{answer: &agent.Answer{Text: "不应被回复"}}
 	feishu := newStubFeishu()
 
 	// 机器人自己的消息，应被忽略
 	botEvent := newEvent(strPtr("bot"), strPtr("text"), strPtr(`{"text":"我是机器人"}`), strPtr("oc_chat"))
-	if err := New(model, feishu).HandlerFeishuMsg(context.Background(), botEvent); err != nil {
+	if err := New(stub, feishu).HandlerFeishuMsg(context.Background(), botEvent); err != nil {
 		t.Fatalf("HandlerFeishuMsg() = %v, want nil（解析失败只记日志，不影响 ACK）", err)
 	}
 
 	if got := len(feishu.sentMessages()); got != 0 {
 		t.Errorf("发出消息 %d 条, want 0 条", got)
 	}
-	if model.gotQ != "" {
-		t.Errorf("模型被调用且收到 %q, want 未被调用", model.gotQ)
+	if stub.gotQ != "" {
+		t.Errorf("模型被调用且收到 %q, want 未被调用", stub.gotQ)
 	}
 }
 
 func TestHandlerFeishuMsgAnswersValidEvent(t *testing.T) {
-	model := &stubLLM{answer: &llm.Answer{Text: "先提交申请，再由主管审批。"}}
+	stub := &stubAnswerer{answer: &agent.Answer{Text: "先提交申请，再由主管审批。"}}
 	feishu := newStubFeishu()
 
-	if err := New(model, feishu).HandlerFeishuMsg(context.Background(), validEvent()); err != nil {
+	if err := New(stub, feishu).HandlerFeishuMsg(context.Background(), validEvent()); err != nil {
 		t.Fatalf("HandlerFeishuMsg() = %v, want nil", err)
 	}
 
 	feishu.waitSent(t)
 
-	if model.gotQ != "怎么申请调休" {
-		t.Errorf("模型收到的问题 = %q, want 剥离 @占位符 后的正文", model.gotQ)
+	if stub.gotQ != "怎么申请调休" {
+		t.Errorf("模型收到的问题 = %q, want 剥离 @占位符 后的正文", stub.gotQ)
+	}
+	// 会话键必须是群标识。传错或传空，同一个群的多轮追问就接不上上下文——
+	// 这是「每群一个会话」能否成立的唯一证据。
+	if stub.gotChat != "oc_chat" {
+		t.Errorf("模型收到的会话键 = %q, want oc_chat（每群一个会话）", stub.gotChat)
 	}
 	if sent := feishu.sentMessages(); len(sent) != 1 || sent[0].chatID != "oc_chat" {
 		t.Errorf("发出消息 = %+v, want 1 条且 chatID 为 oc_chat", sent)
@@ -198,7 +206,7 @@ func TestHandlerFeishuMsgAnswersValidEvent(t *testing.T) {
 // （oapi-sdk-go/ws/client_message.go），一旦在此同步等待模型，
 // ACK 会被推迟数十秒，飞书判定未确认并重推，导致重复扣费与重复回复。
 func TestHandlerFeishuMsgReturnsBeforeModelCompletes(t *testing.T) {
-	slow := &blockingLLM{entered: make(chan struct{}), release: make(chan struct{})}
+	slow := &blockingAnswerer{entered: make(chan struct{}), release: make(chan struct{})}
 	feishu := newStubFeishu()
 	b := New(slow, feishu)
 

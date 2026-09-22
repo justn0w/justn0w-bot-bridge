@@ -8,12 +8,10 @@ database:
   port: 3306
   name: justn0w_bot_bridge
 
-# 答疑模型。api_key 属敏感信息，由环境变量 DEEPSEEK_API_KEY 注入，不要写在这里。
-llm:
-  # DeepSeek 的 Anthropic 兼容入口；只需填到域名层级，SDK 会自动补 /v1/messages。
-  # 换其他兼容 Anthropic Messages 协议的网关时改这里即可，代码无需改动。
-  base_url: https://api.deepseek.com/anthropic
-  # 需要更强推理能力时改成 deepseek-v4-pro
-  model: deepseek-v4-flash
-  max_tokens: 2000
-  timeout_sec: 90
+# 答疑 agent：直接驱动本机的 Claude Code CLI，复用其登录态与代码库上下文。
+# 不需要配密钥——CLI 用的是本机已登录的账号。
+claude:
+  # 按名称走 PATH 查找；填绝对路径可避免 PATH 差异导致启动即失败
+  cli_path: claude
+  # 每次提问都要冷启动一个子进程，比 HTTP 调用慢，超时给宽松些
+  timeout_sec: 120

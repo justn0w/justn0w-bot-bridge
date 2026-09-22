@@ -11,7 +11,7 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
-	"justn0w-bot-bridge/internal/llm"
+	"justn0w-bot-bridge/internal/agent"
 )
 
 const (
@@ -19,9 +19,12 @@ const (
 	replyOnFailure = "抱歉，AI 答疑服务暂时不可用，请稍后重试或联系值班同学。"
 )
 
-// answerer 抽象答疑模型，便于测试替换
+// answerer 抽象答疑模型，便于测试替换。
+//
+// sessionKey 标识一段连续对话（当前传飞书 chatID）。答疑模型据此把同一群里的
+// 多轮提问接到同一个上下文里；接口上没有这个键，实现端就无从分辨是谁在问。
 type answerer interface {
-	Ask(ctx context.Context, question string) (*llm.Answer, error)
+	Ask(ctx context.Context, sessionKey, question string) (*agent.Answer, error)
 }
 
 // replier 抽象消息发送，便于测试替换
@@ -29,16 +32,18 @@ type replier interface {
 	SendText(ctx context.Context, chatID, text string) error
 }
 
-// Bridge 聚合一次答疑所需的依赖
+// Bridge 聚合一次答疑所需的依赖。
+// answerer 字段名与接口类型同名（Go 里常见的 logger Logger 写法），
+// 既贴合它承载的东西，也避开与本文件 import 的包名 agent 撞名。
 type Bridge struct {
-	llm    answerer
-	feishu replier
+	answerer answerer
+	feishu   replier
 }
 
 // New 构造函数注入依赖。
 // 参数用接口声明（accept interfaces），返回具体类型（return structs）。
 func New(a answerer, r replier) *Bridge {
-	return &Bridge{llm: a, feishu: r}
+	return &Bridge{answerer: a, feishu: r}
 }
 
 // HandlerFeishuMsg 处理飞书 im.message.receive_v1 事件：
@@ -72,7 +77,8 @@ func (b *Bridge) answer(ctx context.Context, chatID, question string) {
 		}
 	}()
 
-	ans, err := b.llm.Ask(ctx, question)
+	// chatID 同时也是会话键：同一个群的连续追问共享一段 CLI 会话
+	ans, err := b.answerer.Ask(ctx, chatID, question)
 	if err != nil {
 		log.Printf("调用模型失败: chat_id=%s: %v", chatID, err)
 		b.reply(ctx, chatID, replyOnFailure)

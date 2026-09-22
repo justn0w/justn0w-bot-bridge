@@ -1,61 +1,86 @@
 package claude
 
 import (
-	"bufio"
+	"bytes"
+	"context"
 	"fmt"
-	"io"
 	"os/exec"
+	"strings"
 )
 
-// prompt 是当前写死的提问，后续由调用方传入
-const prompt = "who you are ?"
+// 子进程输出上限。正常回答是单个 JSON 对象，量级在几 KB；
+// 一旦逼近这些上限，说明 CLI 行为异常（例如退回交互式界面刷屏），
+// 继续读下去只会把服务进程的内存吃光。
+const (
+	maxStdoutBytes = 1 << 20 // 1 MiB
+	maxStderrBytes = 64 << 10
+)
 
-// startProcess 拉起 cliPath 指定的进程，把它的 stdout 逐行写入 out。
+// runCLI 执行一次 claude 调用，返回 stdout 原文。
 //
-// cliPath 与 out 是刻意留出的两个缝：前者让测试能注入假 CLI，不必依赖本机
-// 安装并登录真实 claude；后者让断言落在调用方传入的 buffer 上，不必替换
-// 全局的 os.Stdout。
-func startProcess(cliPath string, out io.Writer) error {
-	// -p/--print 是必须的：不带它 claude 会进交互式 TUI 并等待终端输入，
-	// 而这里的 stdin 是 /dev/null、stdout 是管道，结果只会是立即 EOF 或卡死。
-	cmd := exec.Command(cliPath, "-p", prompt)
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("获取 stdout 管道失败: %w", err)
+// 三个刻意的设计：
+//
+//   - args 以切片给出，提问作为其中一个元素直接进 argv，全程不经过 shell。
+//     提问来自飞书群消息，属外部输入；一旦改成拼字符串再交给 sh -c，就是命令注入。
+//   - 用 exec.CommandContext 而非 exec.Command。调用方的超时一旦触发，
+//     子进程必须被一起终止，否则会留下继续消耗额度的孤儿进程。
+//   - 走 cmd.Stdout 赋值而不是 cmd.StdoutPipe()。exec 包会为前者起一个拷贝
+//     goroutine 并让 Wait 等它读完；后者则要求自行保证「先读完再 Wait」——
+//     Wait 会关闭管道读端，并发执行时尾部输出会被 ErrClosed 吞掉。
+func runCLI(ctx context.Context, cliPath, workDir string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	if workDir != "" {
+		cmd.Dir = workDir
 	}
 
-	scanner := bufio.NewScanner(stdoutPipe)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 %s 失败: %w", cliPath, err)
+	var stdout, stderr boundedBuffer
+	stdout.max, stderr.max = maxStdoutBytes, maxStderrBytes
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	// 不接 stdin（保持 nil，即 /dev/null）：-p 模式下 stdin 是 prompt 的备选来源，
+	// 留着管道会让 CLI 误以为要读流式输入。
+	if err := cmd.Run(); err != nil {
+		// 显式回看 ctx：CommandContext 超时杀掉子进程后，Wait 返回的是
+		// 「signal: killed」这类退出错误，并不保证包装 context.DeadlineExceeded。
+		// 不在这里补一刀，调用方就无从区分「超时」与「CLI 自己失败」。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("执行 %s 被中断: %w", cliPath, ctxErr)
+		}
+		return nil, fmt.Errorf("执行 %s 失败: %w（stderr: %s）", cliPath, err, stderr.text())
 	}
 
-	readErr := scanLines(scanner, out)
-	if readErr != nil {
-		// 读取提前失败时子进程可能仍阻塞在写管道上永不退出，
-		// 先终止再回收，否则会留下僵尸进程
-		_ = cmd.Process.Kill()
+	if stdout.truncated {
+		return nil, fmt.Errorf("执行 %s 的输出超过 %d 字节上限，已丢弃", cliPath, maxStdoutBytes)
 	}
-	waitErr := cmd.Wait()
-
-	if readErr != nil {
-		return fmt.Errorf("读取 %s 输出失败: %w", cliPath, readErr)
-	}
-	if waitErr != nil {
-		return fmt.Errorf("%s 退出异常: %w", cliPath, waitErr)
-	}
-	return nil
+	return stdout.buf.Bytes(), nil
 }
 
-// scanLines 把扫描器读到的每一行写入 out，返回扫描过程中的首个错误。
+// boundedBuffer 收集子进程输出，超出上限后丢弃后续内容。
 //
-// 读循环必须与 cmd.Wait() 分开：Wait 会关闭管道读端，两者并发执行时
-// 尾部输出会被 ErrClosed 吞掉。同时这里显式返回 scanner.Err()，
-// 避免单行超限之类的扫描错误被静默丢弃。
-func scanLines(scanner *bufio.Scanner, out io.Writer) error {
-	for scanner.Scan() {
-		if _, err := fmt.Fprintln(out, scanner.Text()); err != nil {
-			return err
-		}
+// 丢弃而非返回写错误：子进程若被 Write 的错误打断，可能直接退出，
+// 反而掩盖掉真正的失败原因。这里让进程正常跑完，再由调用方根据 truncated 决定是否采信。
+type boundedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	remain := b.max - b.buf.Len()
+	if remain <= 0 {
+		b.truncated = true
+		return len(p), nil
 	}
-	return scanner.Err()
+	if len(p) > remain {
+		b.buf.Write(p[:remain])
+		b.truncated = true
+		return len(p), nil
+	}
+	b.buf.Write(p)
+	return len(p), nil
+}
+
+// text 返回已收集内容，仅用于拼接错误信息
+func (b *boundedBuffer) text() string {
+	return strings.TrimSpace(b.buf.String())
 }
