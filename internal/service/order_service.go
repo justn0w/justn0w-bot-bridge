@@ -50,6 +50,11 @@ func ListOrders(page, pageSize int) ([]model.Order, int64, error) {
 	return repository.ListOrders(page, pageSize)
 }
 
+// ListOrdersByUser 按用户分页查询订单列表
+func ListOrdersByUser(userID uint, page, pageSize int) ([]model.Order, int64, error) {
+	return repository.ListOrdersByUser(userID, page, pageSize)
+}
+
 func wrapNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("订单不存在")

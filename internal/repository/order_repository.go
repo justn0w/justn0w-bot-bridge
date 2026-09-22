@@ -44,3 +44,21 @@ func ListOrders(page, pageSize int) ([]model.Order, int64, error) {
 	}
 	return orders, total, nil
 }
+
+// ListOrdersByUser 按用户分页查询订单列表，返回列表与总数
+func ListOrdersByUser(userID uint, page, pageSize int) ([]model.Order, int64, error) {
+	db := database.GetDB()
+
+	var orders []model.Order
+	var total int64
+	if err := db.Model(&model.Order{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	if err := db.Where("user_id = ?", userID).
+		Order("id DESC").Limit(pageSize).Offset(offset).Find(&orders).Error; err != nil {
+		return nil, 0, err
+	}
+	return orders, total, nil
+}
